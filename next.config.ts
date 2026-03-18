@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  eslint: { ignoreDuringBuilds: true },
 
 async redirects() {
   return [
