@@ -114,3 +114,16 @@ enum NodeType {
   MANUAL_TRIGGER
   HTTP_REQUEST
 }
+
+model SignalRun {
+  id         String   @id @default(cuid())
+  sector     String
+  signalMap  String   @db.Text
+  analysis   String   @db.Text
+  itemCount  Int      @default(0)
+  nodeCount  Int      @default(0)
+  runAt      DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@map("signal_run")
+}
