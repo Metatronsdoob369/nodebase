@@ -170,15 +170,22 @@ export const sarnSignalRun = inngest.createFunction(
     }
 
     const sector = (event as any).data?.sector ?? "racing";
+    const topic  = (event as any).data?.topic  ?? null;  // optional editorial brief
 
     // ── Step 1: GAT compression ──────────────────────────────────────────────
     const gat = await step.run("gat-compress", () => runGatScript(sector));
 
     // ── Step 2: Grok editorial analysis ─────────────────────────────────────
+    // If a topic is provided, Grok uses the GAT graph as research backing for
+    // that specific angle. If not, Grok finds the most original story itself.
+    const topicDirective = topic
+      ? `\n\nEDITORIAL BRIEF FROM EDITOR: "${topic}"\n\nUse the signal map above as your research. Find what the graph actually says about this topic — which nodes support it, which tensions make it interesting, what angle nobody else is writing. If the data doesn't support the brief, say so and write the closest honest version of it that the graph does support.`
+      : `\n\nNo editorial brief — find the most original, specific story the graph is pointing at that other publications aren't covering. The circuit feed already has the obvious takes. Find the gap.`;
+
     const analysis = await step.run("grok-analysis", () =>
       callGrok(
-        `Sector: ${sector.toUpperCase()}\n\n${gat.map}\n\nYou are reading the live signal map of the ${sector} community right now. Give me editorial intelligence:\n\n**ARTICLE LEAD:** Write the title and one-sentence hook for the article SARN should publish today. Make it specific to what this signal map actually shows — not a generic racing headline.\n\n**SIGNAL BREAKDOWN:**\n- What's the strongest story in this data? (name it, cite the nodes)\n- What's the dark horse signal — strong graph weight but not obvious?\n- What does this community actually care about this week that isn't the obvious answer?\n\n**EDITORIAL CALL:** One paragraph. What's the cultural moment here? What would a sharp editor see in this data that a casual reader would miss?\n\nBe specific. Cite actual nodes and scores. No boilerplate. This is for a publication, not a report.`,
-        "You are SARN's signal editor. You read compressed signal maps and produce sharp, specific editorial intelligence for a speed culture publication. Every analysis should feel like a different story because it IS a different day. Cite specific nodes. Name specific tensions. Be a journalist, not a summariser."
+        `Sector: ${sector.toUpperCase()}\n\n${gat.map}${topicDirective}\n\n**ARTICLE LEAD:** Write the title and one-sentence hook for the article SARN should publish. Make it specific to what this signal map actually shows.\n\n**SIGNAL BREAKDOWN:**\n- What's the strongest story in this data? (name it, cite the nodes)\n- What's the dark horse signal — strong graph weight but not obvious?\n- What does this community actually care about right now that isn't the obvious answer?\n\n**EDITORIAL CALL:** One paragraph. What's the cultural moment here? What would a sharp editor see in this data that a casual reader would miss?\n\nBe specific. Cite actual nodes and scores. No boilerplate. This is for a publication, not a report.`,
+        "You are SARN's signal editor. You read compressed signal maps and produce sharp, specific editorial intelligence for a speed culture publication. Every analysis should feel like a different story because the data IS different every time. Cite specific nodes. Name specific tensions. Be a journalist, not a summariser."
       )
     );
 
