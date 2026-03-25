@@ -6,16 +6,16 @@ import { PrismaClient } from "@/lib/generated/prisma";
 
 const prisma = new PrismaClient();
 
-// Call xAI directly via fetch — avoids AI SDK Responses API incompatibility
+// Call Grok via Comet (OpenAI-compatible proxy) — separate billing from xAI direct
 async function callGrok(prompt: string, system: string): Promise<string> {
-  const res = await fetch("https://api.x.ai/v1/chat/completions", {
+  const res = await fetch("https://api.cometapi.com/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${process.env.XAI_API_KEY}`,
+      "Authorization": `Bearer ${process.env.COMET_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "grok-3-fast",
+      model: "grok-4-fast-non-reasoning",
       messages: [
         { role: "system", content: system },
         { role: "user", content: prompt },
@@ -24,7 +24,7 @@ async function callGrok(prompt: string, system: string): Promise<string> {
       temperature: 0.7,
     }),
   });
-  if (!res.ok) throw new Error(`xAI error ${res.status}: ${await res.text()}`);
+  if (!res.ok) throw new Error(`Comet error ${res.status}: ${await res.text()}`);
   const data = await res.json() as any;
   return data.choices[0].message.content;
 }
@@ -159,7 +159,7 @@ export const sarnSignalRun = inngest.createFunction(
   },
   [
     { event: "sarn/signal.run" },
-    { cron: "0 */6 * * *" }, // every 6 hours
+    { cron: "0 8,20 * * *" }, // 8am + 8pm daily
   ],
   async ({ event, step }) => {
     // These functions spawn local processes (conda/Python GAT, sqlite3, file writes).
@@ -171,21 +171,55 @@ export const sarnSignalRun = inngest.createFunction(
 
     const sector = (event as any).data?.sector ?? "racing";
     const topic  = (event as any).data?.topic  ?? null;  // optional editorial brief
+    const force  = (event as any).data?.force  ?? false; // bypass gate
 
-    // ── Step 1: GAT compression ──────────────────────────────────────────────
-    const gat = await step.run("gat-compress", () => runGatScript(sector));
+    // ── Step 0: GAT freshness gate ───────────────────────────────────────────
+    // Only compress if enough new RSS items have landed since the last run.
+    // Prevents redundant re-compression when the corpus hasn't meaningfully changed.
+    const MIN_NEW_ITEMS = 50;
+    const gat = await step.run("gat-compress", async () => {
+      if (!force) {
+        const lastRun = await prisma.signalRun.findFirst({
+          where: { sector },
+          orderBy: { runAt: "desc" },
+          select: { runAt: true, itemCount: true, signalMap: true, nodeCount: true },
+        });
+        if (lastRun?.signalMap) {
+          // Count RSS items newer than last run across available DBs
+          const { execSync } = await import("child_process");
+          const since = lastRun.runAt.toISOString();
+          let newItems = 0;
+          try {
+            const dbDir = "/Users/joewales/NODE_OUT_Master/TrendRadar/output/rss";
+            const dbs = execSync(`ls ${dbDir}/*.db 2>/dev/null | tail -2`).toString().trim().split("\n").filter(Boolean);
+            for (const db of dbs) {
+              try {
+                const count = execSync(
+                  `sqlite3 "${db}" "SELECT count(*) FROM rss_items WHERE published_at > '${since}'" 2>/dev/null`
+                ).toString().trim();
+                newItems += parseInt(count) || 0;
+              } catch { /* empty db, skip */ }
+            }
+          } catch { /* ignore */ }
+          if (newItems < MIN_NEW_ITEMS) {
+            return { map: lastRun.signalMap, itemCount: lastRun.itemCount, nodeCount: lastRun.nodeCount, cached: true };
+          }
+        }
+      }
+      return runGatScript(sector);
+    });
 
     // ── Step 2: Grok editorial analysis ─────────────────────────────────────
     // If a topic is provided, Grok uses the GAT graph as research backing for
     // that specific angle. If not, Grok finds the most original story itself.
     const topicDirective = topic
-      ? `\n\nEDITORIAL BRIEF FROM EDITOR: "${topic}"\n\nUse the signal map above as your research. Find what the graph actually says about this topic — which nodes support it, which tensions make it interesting, what angle nobody else is writing. If the data doesn't support the brief, say so and write the closest honest version of it that the graph does support.`
+      ? `\n\nEDITORIAL BRIEF FROM EDITOR: "${topic}"\n\nWrite this article. Use your own knowledge and current awareness of this topic — the signal map above is supporting context and data color, not a constraint. If there are nodes in the graph that reinforce the story, cite them. If the graph is silent on it, write the article anyway from what you know. The brief is the assignment. Deliver it.`
       : `\n\nNo editorial brief — find the most original, specific story the graph is pointing at that other publications aren't covering. The circuit feed already has the obvious takes. Find the gap.`;
 
     const analysis = await step.run("grok-analysis", () =>
       callGrok(
         `Sector: ${sector.toUpperCase()}\n\n${gat.map}${topicDirective}\n\n**ARTICLE LEAD:** Write the title and one-sentence hook for the article SARN should publish. Make it specific to what this signal map actually shows.\n\n**SIGNAL BREAKDOWN:**\n- What's the strongest story in this data? (name it, cite the nodes)\n- What's the dark horse signal — strong graph weight but not obvious?\n- What does this community actually care about right now that isn't the obvious answer?\n\n**EDITORIAL CALL:** One paragraph. What's the cultural moment here? What would a sharp editor see in this data that a casual reader would miss?\n\nBe specific. Cite actual nodes and scores. No boilerplate. This is for a publication, not a report.`,
-        "You are SARN's signal editor. You read compressed signal maps and produce sharp, specific editorial intelligence for a speed culture publication. Every analysis should feel like a different story because the data IS different every time. Cite specific nodes. Name specific tensions. Be a journalist, not a summariser."
+        "You are SARN's signal editor. The publication sits at the intersection of F1, sim racing, and digital speed culture — think Drive to Survive meets Top Gear: cinematic, irreverent, accessible. The audience is 24-35, watches F1 because it's dramatic not because they know tyre compounds, plays racing games, follows the aesthetic of going fast. Write like a Netflix producer who also knows the data. Sharp, specific, human. Cite real nodes from the signal map. Find the tension, the character, the moment — not the spec sheet. Never write like a gearhead manual or a tech blog. Every piece should make someone want to watch the next episode."
       )
     );
 
