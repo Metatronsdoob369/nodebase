@@ -2,7 +2,7 @@
 
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
-import { SaveIcon } from "lucide-react";
+import { SaveIcon, PlayIcon } from "lucide-react";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -11,7 +11,6 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { useSuspenseWorkflow } from "@/features/workflows/hooks/use-workflows";
@@ -22,27 +21,64 @@ import {
 import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
 import { useAtomValue } from "jotai";
 import { editorAtom } from "@/features/editor/store/atoms";
+import { toast } from "sonner";
 
 export const EditorSaveButton = ({ workflowId }: { workflowId: string }) => {
   const editor = useAtomValue(editorAtom);
   const saveWorkflow = useUpdateWorkflow();
+  const [isRunning, setIsRunning] = useState(false);
 
   const handleSave = () => {
-    if (!editor) {
-      return;
-    }
+    if (!editor) return;
     const nodes = editor.getNodes();
     const edges = editor.getEdges();
+    saveWorkflow.mutateAsync({ id: workflowId, nodes, edges });
+  };
 
-    saveWorkflow.mutateAsync({
-      id: workflowId,
-      nodes,
-      edges,
-    });
+  const handleRun = async () => {
+    if (!editor) return;
+    setIsRunning(true);
+    try {
+      const nodes = editor.getNodes();
+      const triggerNode = nodes.find(
+        (n) => n.type === "MANUAL_TRIGGER" || n.type === "WEBHOOK_TRIGGER"
+      );
+      const res = await fetch("/api/webhook/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          packId: workflowId,
+          source: "canvas-run",
+          _simulation: true,
+          triggerNodeType: triggerNode?.type ?? "MANUAL_TRIGGER",
+          nodeCount: nodes.length,
+          workflowId,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        toast.success(`Simulation fired — ingest ID: ${data.id}`);
+      } else {
+        toast.error(`Simulation failed: ${data.error}`);
+      }
+    } catch (err: any) {
+      toast.error(`Run error: ${err.message}`);
+    } finally {
+      setIsRunning(false);
+    }
   };
 
   return (
     <div className="ml-auto flex items-center gap-2">
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={handleRun}
+        disabled={isRunning}
+      >
+        <PlayIcon className="size-4 mr-2" />
+        {isRunning ? "Running..." : "Run"}
+      </Button>
       <Button size="sm" onClick={handleSave} disabled={saveWorkflow.isPending}>
         <SaveIcon className="size-4 mr-2" />
         Save
@@ -61,9 +97,7 @@ export const EditorNameInput = ({ workflowId }: { workflowId: string }) => {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (workflow.name) {
-      setName(workflow.name);
-    }
+    if (workflow.name) setName(workflow.name);
   }, [workflow.name]);
 
   useEffect(() => {
@@ -74,14 +108,10 @@ export const EditorNameInput = ({ workflowId }: { workflowId: string }) => {
   }, [isEditing]);
 
   const handleSave = async () => {
-    if (name === workflow.name) {
-      setIsEditing(false);
-      return;
-    }
-
+    if (name === workflow.name) { setIsEditing(false); return; }
     try {
       await updateWorkflowName.mutateAsync({ id: workflowId, name });
-    } catch (error) {
+    } catch {
       setName(workflow.name);
     } finally {
       setIsEditing(false);
@@ -89,12 +119,8 @@ export const EditorNameInput = ({ workflowId }: { workflowId: string }) => {
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter") {
-      handleSave();
-    } else if (event.key === "Escape") {
-      setName(workflow.name);
-      setIsEditing(false);
-    }
+    if (event.key === "Enter") handleSave();
+    else if (event.key === "Escape") { setName(workflow.name); setIsEditing(false); }
   };
 
   if (!isEditing) {
@@ -128,9 +154,7 @@ export const EditorBreadcrumbs = ({ workflowId }: { workflowId: string }) => {
       <BreadcrumbList>
         <BreadcrumbItem>
           <BreadcrumbLink asChild>
-            <Link prefetch href="/workflows">
-              Workflows
-            </Link>
+            <Link prefetch href="/workflows">Workflows</Link>
           </BreadcrumbLink>
         </BreadcrumbItem>
         <BreadcrumbSeparator />
