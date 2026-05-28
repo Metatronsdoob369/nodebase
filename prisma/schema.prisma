@@ -9,17 +9,17 @@ datasource db {
 }
 
 model User {
-  id            String     @id
-  name          String
-  email         String     @unique
-  emailVerified Boolean    @default(false)
-  image         String?
-  polarCustomerId String?   // Add this field
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @default(now()) @updatedAt
-  workflows     Workflow[]
-  accounts      Account[]
-  sessions      Session[]
+  id              String     @id
+  name            String
+  email           String     @unique
+  emailVerified   Boolean    @default(false)
+  image           String?
+  polarCustomerId String?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @default(now()) @updatedAt
+  workflows       Workflow[]
+  accounts        Account[]
+  sessions        Session[]
 
   @@map("user")
 }
@@ -109,21 +109,94 @@ model Connection {
   @@unique([fromNodeId, fromOutput, toNodeId, toInput])
 }
 
+model SignalRun {
+  id             String   @id @default(cuid())
+  sector         String
+  signalMap      String
+  analysis       String
+  itemCount      Int      @default(0)
+  nodeCount      Int      @default(0)
+  runAt          DateTime @default(now())
+  createdAt      DateTime @default(now())
+  sceneParams    Json?
+  sceneImagePath String?
+  sceneImageUrl  String?
+  status         String   @default("pending_review")
+
+  @@map("signal_run")
+}
+
+model CircuitArticle {
+  id          String    @id @default(cuid())
+  title       String
+  url         String    @unique
+  source      String
+  sector      String
+  summary     String?
+  author      String?
+  publishedAt DateTime?
+  ingestedAt  DateTime  @default(now())
+  signalScore Float     @default(1.0)
+
+  @@index([sector])
+  @@index([publishedAt(sort: Desc)])
+  @@index([source])
+  @@map("circuit_article")
+}
+
 enum NodeType {
+  WEBHOOK_TRIGGER
+  CODE_TRANSFORM
   INITIAL
   MANUAL_TRIGGER
   HTTP_REQUEST
 }
 
-model SignalRun {
-  id         String   @id @default(cuid())
-  sector     String
-  signalMap  String   @db.Text
-  analysis   String   @db.Text
-  itemCount  Int      @default(0)
-  nodeCount  Int      @default(0)
-  runAt      DateTime @default(now())
-  createdAt  DateTime @default(now())
+model TerrainIngest {
+  id            String   @id @default(cuid())
+  domain        String?
+  packId        String
+  corpusSize    Int?
+  canonicalPts  Int?
+  shatteredPts  Int?
+  blake2bHash   String?
+  sourcePath    String?
+  source        String?
+  payload       Json?
+  status        String   @default("pending")
+  errorMsg      String?
+  triggeredBy   String   @default("webhook")
+  createdAt     DateTime @default(now())
+  completedAt   DateTime?
 
-  @@map("signal_run")
+  @@map("terrain_ingest")
+}
+
+model GateEvent {
+  id            String   @id @default(cuid())
+  domain        String
+  queryHash     String
+  shatter       Float
+  heat          Float
+  band          String
+  gateState     String
+  decision      String
+  slopHit       Boolean  @default(false)
+  timestamp     DateTime @default(now())
+
+  @@map("gate_event")
+}
+
+model AuditEntry {
+  id              String   @id @default(cuid())
+  domain          String
+  queryHash       String
+  shatter         Float
+  gateDecision    String
+  spectralProofHash String
+  operatorAction  String   @default("pending")
+  entryHash       String
+  createdAt       DateTime @default(now())
+
+  @@map("audit_entry")
 }

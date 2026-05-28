@@ -6,6 +6,75 @@ import { PrismaClient } from "@/lib/generated/prisma";
 
 const prisma = new PrismaClient();
 
+interface GrokResponse {
+  choices: Array<{
+    message: {
+      content: string;
+    };
+  }>;
+}
+
+interface InngestEvent {
+  data: {
+    sector?: string;
+    topic?: string;
+    force?: boolean;
+    [key: string]: unknown;
+  };
+}
+
+interface GatResult {
+  map: string;
+  itemCount: number;
+  nodeCount: number;
+  gsi_score?: number;
+  cached?: boolean;
+}
+
+interface GovernanceResponse {
+  success: boolean;
+  auditId: string;
+  error?: {
+    issues?: Array<{
+      path: string[];
+      message: string;
+    }>;
+  };
+}
+
+interface SceneParams {
+  track: string;
+  weather: "clear" | "overcast" | "light_rain" | "heavy_rain" | "fog";
+  timeOfDay: "dawn" | "morning" | "midday" | "dusk" | "night";
+  intensity: "tactical" | "aggressive" | "chaotic" | "climactic";
+  camera: "cockpit" | "chase" | "aerial" | "tv_broadcast" | "cinematic_orbit";
+  mood: string;
+  dominantSignal: string;
+  racerCount: number;
+  [key: string]: string | number | boolean | null | undefined;
+}
+
+interface SceneImageResult {
+  skipped: boolean;
+  url: string | null;
+  localPath: string | null;
+}
+
+interface CircuitArticleRow {
+  title: string;
+  url: string;
+  source: string;
+  published_at: string;
+  summary: string | null;
+  author: string | null;
+}
+
+interface ImagineResponse {
+  data: Array<{
+    b64_json: string;
+  }>;
+}
+
 // Call Grok via Comet (OpenAI-compatible proxy) — separate billing from xAI direct
 async function callGrok(prompt: string, system: string): Promise<string> {
   const res = await fetch("https://api.cometapi.com/v1/chat/completions", {
@@ -25,21 +94,19 @@ async function callGrok(prompt: string, system: string): Promise<string> {
     }),
   });
   if (!res.ok) throw new Error(`Comet error ${res.status}: ${await res.text()}`);
-  const data = await res.json() as any;
+  const data = (await res.json()) as GrokResponse;
   return data.choices[0].message.content;
 }
 
-const GAT_SCRIPT = "/Users/joewales/NODE_OUT_Master/torcs-mcp/gat_example.py";
+const GAT_SCRIPT = "/Users/joewales/NODE_OUT_Master/domicile_live/Skills/HK_101/eve_v1.py";
 
-// Run the GAT compression script, return stdout as string
 function runGatScript(
-  sector: string,
-  mode: "signal" | "crossover" = "signal"
-): Promise<{ map: string; itemCount: number; nodeCount: number }> {
+  sector: string
+): Promise<{ map: string; itemCount: number; nodeCount: number; gsi_score?: number }> {
   return new Promise((resolve, reject) => {
     const proc = spawn(
       "conda",
-      ["run", "-n", "agents", "python", GAT_SCRIPT, "--no-grok", "--sector", sector, "--mode", mode],
+      ["run", "-n", "agents", "python", GAT_SCRIPT, "--json", "--sector", sector],
       {
         env: { ...process.env, PYTHONUNBUFFERED: "1" },
         stdio: ["ignore", "pipe", "pipe"],
@@ -57,20 +124,22 @@ function runGatScript(
         return;
       }
 
-      // Parse item/node counts from the status lines printed before the map
-      const itemMatch = stdout.match(/(\d+) articles loaded/);
-      const nodeMatch = stdout.match(/Graph nodes: (\d+)/);
-
-      resolve({
-        map: stdout,
-        itemCount: itemMatch ? parseInt(itemMatch[1]) : 0,
-        nodeCount: nodeMatch ? parseInt(nodeMatch[1]) : 0,
-      });
+      try {
+        const data = JSON.parse(stdout);
+        resolve({
+          map: JSON.stringify(data.diagnostics), // Use diagnostics as the "map" for now
+          itemCount: 0, // TriadGAT is signal-based, not item-based
+          nodeCount: data.node_count,
+          gsi_score: data.gsi_score
+        });
+      } catch (parseError) {
+        reject(new Error(`Failed to parse GAT output: ${stdout.slice(0, 200)} (Error: ${parseError})`));
+      }
     });
 
     proc.on("error", (e) => reject(new Error(`Failed to spawn: ${e.message}`)));
 
-    // 3-minute timeout — GAT is fast, Grok is on our side
+    // 3-minute timeout
     setTimeout(() => {
       proc.kill("SIGTERM");
       reject(new Error("GAT script timed out after 3 minutes"));
@@ -93,11 +162,11 @@ export const sarnCrossoverRun = inngest.createFunction(
       return { skipped: true, reason: "local-only — run via Inngest dev server" };
     }
 
-    const sector = (event as any).data?.sector ?? "racing";
+    const sector = (event.data as { sector?: string })?.sector ?? "racing";
 
     // Step 1: Build crossover map (no-grok, full feed, cultural universe)
     const gat = await step.run("gat-crossover-map", () =>
-      runGatScript(sector, "crossover")
+      runGatScript(sector)
     );
 
     // Step 2: Grok finds the entendre bridges
@@ -122,8 +191,8 @@ export const sarnCrossoverRun = inngest.createFunction(
         }),
       }).then(async (r) => {
         if (!r.ok) throw new Error(`xAI error ${r.status}: ${await r.text()}`);
-        const d = await r.json() as any;
-        return d.choices[0].message.content as string;
+        const d = (await r.json()) as GrokResponse;
+        return d.choices[0].message.content;
       });
       return res;
     });
@@ -162,16 +231,14 @@ export const sarnSignalRun = inngest.createFunction(
     { cron: "0 8,20 * * *" }, // 8am + 8pm daily
   ],
   async ({ event, step }) => {
-    // These functions spawn local processes (conda/Python GAT, sqlite3, file writes).
-    // They only work when the Inngest dev server is running locally.
-    // On Vercel cloud deployments, bail out cleanly instead of failing.
     if (process.env.VERCEL) {
       return { skipped: true, reason: "local-only — run via Inngest dev server" };
     }
 
-    const sector = (event as any).data?.sector ?? "racing";
-    const topic  = (event as any).data?.topic  ?? null;  // optional editorial brief
-    const force  = (event as any).data?.force  ?? false; // bypass gate
+    const inngestEvent = event as unknown as InngestEvent;
+    const sector = inngestEvent.data?.sector ?? "racing";
+    const topic = inngestEvent.data?.topic ?? null; // optional editorial brief
+    const force = inngestEvent.data?.force ?? false; // bypass gate
 
     // ── Step 0: GAT freshness gate ───────────────────────────────────────────
     // Only compress if enough new RSS items have landed since the last run.
@@ -206,7 +273,7 @@ export const sarnSignalRun = inngest.createFunction(
           }
         }
       }
-      return runGatScript(sector);
+      return runGatScript(sector) as Promise<GatResult>;
     });
 
     // ── Step 2: Grok editorial analysis ─────────────────────────────────────
@@ -242,7 +309,7 @@ export const sarnSignalRun = inngest.createFunction(
     const sceneImage = await step.run("grok-imagine-scene", async () => {
       if (!sceneParams) return { skipped: true, url: null, localPath: null };
 
-      const sp = sceneParams as any;
+      const sp = sceneParams as SceneParams;
       const cameraDirective: Record<string, string> = {
         cockpit:         "first-person driver POV from INSIDE the cockpit looking FORWARD — the halo safety structure frames the top of the view, the steering wheel fills the lower foreground, the car's nose cone extends forward below the halo, the track and other cars stretch away INTO the distance ahead. Wing mirrors visible on far left and far right periphery only. Camera is BEHIND the steering wheel looking toward the front of the car. No rear bodywork visible. No driver helmet or face visible.",
         chase:           "external chase camera directly behind the lead car at track level, car filling 40% of frame, track ahead, no driver face visible",
@@ -285,7 +352,7 @@ export const sarnSignalRun = inngest.createFunction(
         return { skipped: true, url: null, localPath: null };
       }
 
-      const data = await res.json() as any;
+      const data = (await res.json()) as ImagineResponse;
       const b64 = data.data?.[0]?.b64_json;
       if (!b64) return { skipped: true, url: null, localPath: null };
 
@@ -312,9 +379,9 @@ export const sarnSignalRun = inngest.createFunction(
           sector,
           signalMap: gat.map,
           analysis,
-          sceneParams,
-          sceneImageUrl:  (sceneImage as any).url ?? null,
-          sceneImagePath: (sceneImage as any).localPath ?? null,
+          sceneParams: (sceneParams as SceneParams),
+          sceneImageUrl:  (sceneImage as SceneImageResult).url ?? null,
+          sceneImagePath: (sceneImage as SceneImageResult).localPath ?? null,
           itemCount: gat.itemCount,
           nodeCount: gat.nodeCount,
         },
@@ -332,7 +399,7 @@ export const sarnSignalRun = inngest.createFunction(
       const dbPath = join(RSS_DIR, `${today}.db`);
 
       // Extract top articles via sqlite3 — join items with feed names, limit 60
-      let rows: any[] = [];
+      let rows: CircuitArticleRow[] = [];
       try {
         const raw = execSync(
           `sqlite3 -json "${dbPath}" "SELECT ri.title, ri.url, rf.name AS source, ri.published_at, ri.summary, ri.author FROM rss_items ri JOIN rss_feeds rf ON ri.feed_id = rf.id ORDER BY ri.crawl_count DESC, ri.published_at DESC LIMIT 60;"`,
@@ -347,7 +414,7 @@ export const sarnSignalRun = inngest.createFunction(
       let saved = 0;
       for (const row of rows) {
         try {
-          await (prisma as any).circuitArticle.upsert({
+          await prisma.circuitArticle.upsert({
             where: { url: row.url },
             update: { signalScore: 1.0 },
             create: {
@@ -367,6 +434,52 @@ export const sarnSignalRun = inngest.createFunction(
       return { saved, total: rows.length };
     });
 
+    // ── Step 4.5: Validate Governance Contract ──────────────────────────────
+    // The "Law" (port 8080) must approve the scene params before physics execution.
+    const governance = await step.run("validate-governance", async () => {
+      const res = await fetch("http://localhost:8080/v1/contract/validate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": process.env.CONTRACT_BRIDGE_KEY || "development-only-key",
+          "X-Domain": "racing"
+        },
+        body: JSON.stringify({
+          simulation: {
+            carId: "sarn-master-livery", // reference to the livery defined for Grok
+            trackId: (sceneParams as SceneParams).track,
+            weather: (sceneParams as SceneParams).weather,
+            simulationType: "speed_test",
+            gsiScore: (gat as GatResult).gsi_score // Bridge 2: Mathematical Truth
+          },
+          cinematic: {
+            resolution: "1080p",
+            cameraModes: [(sceneParams as SceneParams).camera],
+            footageLengthSeconds: 15,
+            lightingMood: (sceneParams as SceneParams).mood
+          },
+          journalism: {
+            headline: (analysis as string).split('\n')[0].replace("TITLE: ", ""),
+            sentiment: 0.8,
+            sector: "racing"
+          },
+          gate: "ARMED"
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Governance server unavailable: ${res.status}`);
+      }
+
+      const data = (await res.json()) as GovernanceResponse;
+      if (!data.success) {
+        throw new Error(`Governance REJECTED: ${JSON.stringify(data.error)}`);
+      }
+      return { success: true, auditId: data.auditId };
+    });
+
+    console.log(`[Governance] Run ARMED. Audit ID: ${governance.auditId}`);
+
     // ── Step 5: Push scene config to TORCS ──────────────────────────────────
     await step.run("push-scene-to-torcs", async () => {
       if (!sceneParams) return { skipped: true };
@@ -375,13 +488,11 @@ export const sarnSignalRun = inngest.createFunction(
         scenePath,
         JSON.stringify({
           ...sceneParams,
-          signalRunId:    record.id,
-          sceneImagePath: (sceneImage as any).localPath ?? null,
-          sceneImageUrl:  (sceneImage as any).url ?? null,
+          sceneImageUrl:  (sceneImage as SceneImageResult).url ?? null,
           updatedAt:      new Date().toISOString(),
         }, null, 2)
       );
-      return { pushed: true, track: (sceneParams as any).track };
+      return { pushed: true, track: (sceneParams as SceneParams).track };
     });
 
     return {
@@ -391,8 +502,8 @@ export const sarnSignalRun = inngest.createFunction(
       nodeCount:      gat.nodeCount,
       preview:        analysis.slice(0, 280),
       sceneParams,
-      sceneImageUrl:  (sceneImage as any).url ?? null,
-      sceneImagePath: (sceneImage as any).localPath ?? null,
+      sceneImageUrl:  (sceneImage as SceneImageResult).url ?? null,
+      sceneImagePath: (sceneImage as SceneImageResult).localPath ?? null,
     };
   }
 );
@@ -419,7 +530,8 @@ export const sarnCircadianPrune = inngest.createFunction(
       return { skipped: true, reason: "local-only — run via Inngest dev server" };
     }
 
-    const sector = (event as any).data?.sector ?? "racing";
+    const inngestEvent = event as unknown as InngestEvent;
+    const sector = inngestEvent.data?.sector ?? "racing";
 
     // ── Step 1: Load reviewed signal runs (last 14 days) ────────────────────
     const reviewed = await step.run("load-reviewed-runs", () =>
@@ -491,14 +603,21 @@ export const sarnCircadianPrune = inngest.createFunction(
     });
 
     // ── Step 3: Write weights file ───────────────────────────────────────────
+    interface WeightsFile {
+      version: number;
+      weights: Record<string, Record<string, number>>;
+      updatedAt: string;
+      reviewedRuns: number;
+    }
+
     await step.run("write-weights", async () => {
-      let full: any = { version: 1, weights: {} };
+      let full: WeightsFile = { version: 1, weights: {}, updatedAt: "", reviewedRuns: 0 };
       try {
         const raw = await readFile(WEIGHTS_PATH, "utf8");
         full = JSON.parse(raw);
       } catch { /* first write */ }
 
-      full.weights[sector] = weights;
+      full.weights[sector] = weights as Record<string, number>;
       full.updatedAt = new Date().toISOString();
       full.reviewedRuns = reviewed.length;
 

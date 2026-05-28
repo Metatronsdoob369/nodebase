@@ -2,7 +2,7 @@
 
 import { createId } from "@paralleldrive/cuid2";
 import { useReactFlow } from "@xyflow/react";
-import { GlobeIcon, MousePointerIcon } from "lucide-react";
+import { GlobeIcon, MousePointerIcon, WebhookIcon, CodeIcon } from "lucide-react";
 import { useCallback } from "react";
 import { toast } from "sonner";
 import {
@@ -30,6 +30,12 @@ const triggerNodes: NodeTypeOption[] = [
     description: "Runs the flow manually",
     type: NodeType.MANUAL_TRIGGER,
   },
+  {
+    label: "On Webhook Received",
+    icon: WebhookIcon,
+    description: "Triggers when POST hits /api/webhook/ingest",
+    type: NodeType.WEBHOOK_TRIGGER,
+  },
 ];
 
 const executionNodes: NodeTypeOption[] = [
@@ -39,11 +45,17 @@ const executionNodes: NodeTypeOption[] = [
     description: "Makes an HTTP request",
     type: NodeType.HTTP_REQUEST,
   },
+  {
+    label: "Transform / Code",
+    icon: CodeIcon,
+    description: "Transforms and normalizes payload data",
+    type: NodeType.CODE_TRANSFORM,
+  },
 ];
 
 interface NodeSelectorProps {
   open: boolean;
-  onOpenChange: (open: boolean) => void;
+  onOpenChange: (open: boolean ) => void;
   children: React.ReactNode;
 }
 
@@ -59,9 +71,18 @@ export function NodeSelector({
       const hasManualTrigger = nodes.some(
         (node) => node.type === NodeType.MANUAL_TRIGGER
       );
-
       if (hasManualTrigger) {
         toast.error("You can only have one manual trigger");
+        return;
+      }
+    }
+    if (nodeType.type === NodeType.WEBHOOK_TRIGGER) {
+      const nodes = getNodes();
+      const hasWebhookTrigger = nodes.some(
+        (node) => node.type === NodeType.WEBHOOK_TRIGGER
+      );
+      if (hasWebhookTrigger) {
+        toast.error("You can only have one webhook trigger");
         return;
       }
     }
@@ -71,7 +92,6 @@ export function NodeSelector({
       );
       const centerX = window.innerWidth / 2;
       const centerY = window.innerHeight / 2;
-
       const flowPosition = screenToFlowPosition({
         x: centerX + (Math.random() - 0.5) * 200,
         y: centerY + (Math.random() - 0.5) * 200,
@@ -85,17 +105,10 @@ export function NodeSelector({
       if (hasInitialTrigger) {
         return [newNode];
       }
-
       return [...nodes, newNode];
     });
-
     onOpenChange(false);
-  }, [
-    setNodes,
-    getNodes,
-    screenToFlowPosition,
-    onOpenChange,
-  ]);
+  }, [setNodes, getNodes, screenToFlowPosition, onOpenChange]);
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -110,7 +123,6 @@ export function NodeSelector({
         <div>
           {triggerNodes.map((node) => {
             const Icon = node.icon;
-
             return (
               <div
                 key={node.type}
@@ -119,19 +131,13 @@ export function NodeSelector({
               >
                 <div className="flex items-center gap-6 w-full overflow-hidden">
                   {typeof Icon === "string" ? (
-                    <img
-                      src={Icon}
-                      alt={node.label}
-                      className="size-5 object-contain rounded-sm"
-                    />
+                    <img src={Icon} alt={node.label} className="size-5 object-contain rounded-sm" />
                   ) : (
                     <Icon className="size-5" />
                   )}
                   <div className="flex flex-col items-start text-left">
                     <span className="text-sm font-medium">{node.label}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {node.description}
-                    </span>
+                    <span className="text-xs text-muted-foreground">{node.description}</span>
                   </div>
                 </div>
               </div>
@@ -142,7 +148,6 @@ export function NodeSelector({
         <div>
           {executionNodes.map((node) => {
             const Icon = node.icon;
-
             return (
               <div
                 key={node.type}
@@ -151,19 +156,13 @@ export function NodeSelector({
               >
                 <div className="flex items-center gap-6 w-full overflow-hidden">
                   {typeof Icon === "string" ? (
-                    <img
-                      src={Icon}
-                      alt={node.label}
-                      className="size-5 object-contain rounded-sm"
-                    />
+                    <img src={Icon} alt={node.label} className="size-5 object-contain rounded-sm" />
                   ) : (
                     <Icon className="size-5" />
                   )}
                   <div className="flex flex-col items-start text-left">
                     <span className="text-sm font-medium">{node.label}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {node.description}
-                    </span>
+                    <span className="text-xs text-muted-foreground">{node.description}</span>
                   </div>
                 </div>
               </div>
