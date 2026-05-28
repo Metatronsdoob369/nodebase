@@ -1,3 +1,4 @@
+~/nodebase/features/workflows/server/routers.ts << 'EOF'
 import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
 import { generateSlug } from "random-word-slugs";
 import { z } from "zod";
@@ -163,3 +164,4 @@ export const workFlowRouter = createTRPCRouter({
       return { items, page, pageSize, totalCount, totalPages, hasNextPage: page < totalPages, hasPreviousPage: page > 1 };
     }),
 });
+EOF
